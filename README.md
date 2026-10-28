@@ -4,7 +4,7 @@
 
 **Disciplina:** Inteligência Artifial, 5° Período
 
-Simulador 2D de embaixadinhas em que um agente de RL controla uma perna com 3 articulações para manter uma bola no ar pelo maior tempo possível.
+Este projeto desenvolve um simulador 2D de embaixadinhas e treina um agente por Aprendizado por Reforço para controlar uma perna com três articulações (quadril, joelho e tornozelo). O objetivo é maximizar o número de embaixadinhas consecutivas sem deixar a bola cair, usando ações contínuas de torque e recompensa baseada nos toques na bola.
 
 ## 1. Ambiente e estado markoviano
 
