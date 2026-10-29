@@ -60,3 +60,8 @@ _A preencher nas próximas entregas._
 
 - [x] Entrega 1: descrição do problema (apresentação em 29/10/2026)
 - [ ] Entrega 2: [a definir]
+
+## Créditos
+ 
+- Imagem do esquema da perna (quadril, joelho e tornozelo) usada no slide 2: H. Lv e B. Hao, *Convolutional neural network and long short-term memory hybrid model-based gait prediction for spacesuit intelligent assistive device in low gravity environment*.
+ 
