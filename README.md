@@ -75,14 +75,26 @@ python -m src.algoritmos.dqn.avaliar --gif demo.gif    # ou grava um GIF
 
 Parâmetros do ambiente (em `src/env/ambiente.py`): física a 60 Hz com `FRAME_SKIP = 4` (cada decisão dura 1/15 s), episódio de até 500 decisões, perna com densidade 15 e torque máximo de motor 80 N.m, bola leve (densidade 0,3) com restituição 0,5.
 
-## Estado atual [ATUALIZAR]
+## Estado atual
 
-- Ambiente (Box2D + pygame): funcionando. Perna parada rende cerca de 2 embaixadinhas por episódio (a bola quica passivamente no pé), e a política aleatória rende em média cerca de 0,2.
-- Regras de colisão: a perna é sólida (a bola bate na coxa e na canela), mas o **tornozelo só pode abrir**, nunca fechar o "L" do pé contra a canela, o que impediria prender a bola. Em uma varredura de 729 padrões de ação com a bola começando no canto do "L", 8 ainda carregaram a bola sobre o pé quase o tempo todo (sem embaixadinhas), então um agente pode aprender a "carregar" a bola em vez de quicar. A constante `BOLA_COLIDE_PERNA = False` faz a bola atravessar a perna.
+- Ambiente (Box2D + pygame): funcionando, com **ação contínua e discreta** (parâmetro `acao_continua`). A adaptação foi necessária porque o DQN só escolhe entre um conjunto finito de ações.
+  - Discreto (padrão, usado no DQN): 27 ações, cada articulação recebe velocidade-alvo `nível × VEL_MAX`, com nível em {-1, 0, +1}.
+  - Contínuo: torque normalizado em [-1, 1] por articulação (o sinal dá o sentido do motor e o módulo a fração de `TORQUE_MAX`). Ainda não usado em nenhum treino.
+- Regras de colisão: a perna é sólida (`BOLA_COLIDE_PERNA = True`: a bola bate na coxa e na canela), mas o **tornozelo só pode abrir** (limite de -0,6 a 0 rad), nunca fechar o "L" do pé contra a canela, o que impediria prender a bola. Em uma varredura de 729 padrões de ação com a bola começando no canto do "L", 8 ainda carregaram a bola sobre o pé quase o tempo todo (sem embaixadinhas), então um agente poderia aprender a "carregar" a bola em vez de quicar. Com `BOLA_COLIDE_PERNA = False` a bola atravessa a perna.
 - Fim de episódio: o contato da bola com o chão é detectado pelo Box2D durante a simulação, no primeiro toque (e não só no fim de cada decisão).
 - Contagem de embaixadinha: o pé toca a bola, a bola sai subindo a mais de 1 m/s, estava acima do pé e passaram pelo menos 12 passos de física (0,2 s) desde a contagem anterior.
-- Treino com DQN: **ainda não aprende**. Em um teste de 1500 episódios (antes das correções de colisão) a recompensa ficou estável em torno de -7, e a política treinada fez 0 embaixadinhas. Causa em investigação (hipóteses: peso do termo de distância, tamanho do buffer, possível erro na implementação).
-- `avaliar.py` não foi testado com janela real nem com GIF.
+- Treino com DQN: **aprende**. Treinado por 8000 episódios (`resultados/dqn/`). Até o episódio 2000 a média fica em ~0,5 embaixadinha por episódio; o salto acontece por volta do episódio 2500, e do 3000 em diante a média de treino fica em ~23 por episódio (ainda com 5% de ações aleatórias de exploração).
+- Avaliação do `modelo.pt` (política gulosa, sem exploração, 600 episódios em 3 sementes):
+
+  | Política | Embaixadinhas por episódio |
+  |---|---|
+  | Perna parada | 1,4 em média (mediana 2) |
+  | Aleatória | 0,2 em média |
+  | **Agente DQN** | **79 em média** (mediana 80, máximo 92) |
+
+- ~94% dos episódios do agente chegam ao limite de 500 decisões (~33 s) sem a bola cair, então hoje o teto é o limite de tempo do episódio.
+- `avaliar.py`: gravação de GIF testada e funcionando; modo janela ainda não conferido.
+
 
 
 ## Entregas
