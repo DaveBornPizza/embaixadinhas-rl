@@ -10,8 +10,10 @@ Modos de ação (configurados via parâmetro `acao_continua`):
 - Discreto (`acao_continua=False`, padrão): um inteiro de 0 a 26. Cada articulação
   recebe um nível de velocidade-alvo em {-1, 0, +1} (girar para um lado, parar
   segurando a pose, girar para o outro), totalizando 3 x 3 x 3 = 27 combinações.
-- Contínuo (`acao_continua=True`): um vetor `a = (τ₁, τ₂, τ₃) ∈ [-1, 1]³` que
-  define o torque normalizado aplicado diretamente em cada articulação.
+- Contínuo (`acao_continua=True`): um vetor `a = (τ₁, τ₂, τ₃) ∈ [-1, 1]³` com o torque
+  normalizado de cada articulação. No Box2D o torque é aplicado pelo motor da junta: o
+  sentido é o sinal de `a` e o torque máximo é `|a| * TORQUE_MAX`; a velocidade da junta
+  fica limitada a `VEL_MAX` (acima disso o motor freia), o que faz o papel de amortecimento.
 """
 import itertools
 import math
@@ -65,6 +67,20 @@ R_QUEDA = -10.0
 VY_MIN_TOQUE = 1.0               # a bola precisa sair do pé subindo a pelo menos 1 m/s
 COOLDOWN_TOQUE = 12              # mínimo de passos de física (0,2 s) entre duas embaixadinhas
 
+# Anti "bola presa": impede que o agente carregue/pare a bola contra a perna (por exemplo,
+# no canto em "L" entre o pé e a canela) só para ganhar R_VIVO sem arriscar a queda.
+# A bola conta como "encostada" quando a superfície dela está a menos de MARGEM_ENCOSTADA da
+# perna (usa distância geométrica, então não é enganada pela bola "tremendo" no contato).
+MARGEM_ENCOSTADA = 0.04          # m
+GRACA_PRESO = 15                 # passos de física (0,25 s) encostada sem nenhuma penalidade
+LIMITE_PRESO = 60                # passos de física (1 s) seguidos encostada: o episódio termina
+K_PRESO = 0.5                    # penalidade por decisão depois da graça (acumula até o limite)
+R_PRESO_FIM = R_QUEDA            # ao terminar por "bola presa" vale o mesmo que deixar cair
+
+# Suavidade da ação contínua (contra a perna "tremendo")
+K_SUAVIDADE = 0.0                # padrão desligado (o DQN não usa); o treino do PPO liga
+                                 # penalidade = K_SUAVIDADE * ‖a_t - a_(t-1)‖²
+
 # Filtros de colisão: quem pode bater em quem
 CAT_CHAO, CAT_BOLA, CAT_PE, CAT_PERNA = 0x0001, 0x0002, 0x0004, 0x0008
 BOLA_COLIDE_PERNA = True         # True: a bola também bate na coxa e na canela (perna sólida).
@@ -100,7 +116,8 @@ class EmbaixadinhaEnv:
     n_acoes = len(ACOES)         # 3 (ação contínua) ou 27 (ação discreta)
     dim_obs = 10
 
-    def __init__(self, render_mode=None, semente=None, acao_continua=False):
+    def __init__(self, render_mode=None, semente=None, acao_continua=False, anti_preso=False,
+                 controle_continuo="torque", k_suavidade=K_SUAVIDADE, alfa_filtro=0.0):
         self.render_mode = render_mode       # None, "human" ou "rgb_array"
         self.rng = np.random.default_rng(semente)
         self.tela = None
@@ -108,6 +125,19 @@ class EmbaixadinhaEnv:
         self.mundo = None
         self.acao_continua = acao_continua
         self.n_acoes = 3 if acao_continua else 27
+        # anti_preso=True: penaliza e depois encerra o episódio se a bola ficar encostada na
+        # perna por muito tempo. Padrão False para manter o DQN já treinado reproduzível.
+        self.anti_preso = anti_preso
+        # Como a ação contínua a ∈ [-1, 1] vira comando do motor:
+        #   "torque" (padrão, o das apresentações): sentido = sinal(a), torque máximo
+        #                 |a| * TORQUE_MAX. Enquanto |ω| < VEL_MAX o torque aplicado é a *
+        #                 TORQUE_MAX; acima disso o motor freia (limitador de velocidade).
+        #   "velocidade" (alternativa/ablação): velocidade-alvo = a * VEL_MAX com torque máximo
+        #                 fixo, a versão contínua das 27 ações do DQN (a = 0 segura a pose).
+        self.controle_continuo = controle_continuo
+        self.k_suavidade = k_suavidade       # penalidade por mudança brusca de ação
+        self.alfa_filtro = alfa_filtro       # 0 = sem filtro; 0.5 = média móvel exponencial
+        self.comando_anterior = np.zeros(3, dtype=np.float32)
 
     # ------------------------------------------------------------------
     # Construção do mundo
@@ -163,6 +193,23 @@ class EmbaixadinhaEnv:
         # Bola (criada em reset(), pois a posição inicial é sorteada)
         self.bola = None
 
+    def _distancia_perna(self):
+        """Menor distância (m) entre a superfície da bola e a perna (≈ 0 quando encostam).
+
+        Mede em relação a cada segmento sólido (pé; e coxa/canela se a bola colide com elas),
+        no referencial do próprio segmento, onde ele é uma caixa alinhada aos eixos.
+        """
+        segmentos = [(self.pe, C_PE / 2)]
+        if BOLA_COLIDE_PERNA:
+            segmentos += [(self.canela, C_CANELA / 2), (self.coxa, C_COXA / 2)]
+        menor = float("inf")
+        for corpo, meio_comp in segmentos:
+            lx, ly = corpo.GetLocalPoint(self.bola.position)
+            fora_x = max(abs(lx) - meio_comp, 0.0)
+            fora_y = max(abs(ly) - ESPESSURA / 2, 0.0)
+            menor = min(menor, math.hypot(fora_x, fora_y) - RAIO_BOLA)
+        return menor
+
     # ------------------------------------------------------------------
     # Interface principal
     # ------------------------------------------------------------------
@@ -188,15 +235,24 @@ class EmbaixadinhaEnv:
         self.passos_fisica = 0
         self.ultimo_toque = -COOLDOWN_TOQUE
         self.embaixadinhas = 0
+        self.encostada = 0               # passos de física seguidos com a bola encostada na perna
+        self.comando_anterior = np.zeros(3, dtype=np.float32)
         return self._observar(), {}
 
     def step(self, acao):
             # 1) Aplica a ação nos motores das 3 articulações
             if self.acao_continua:
-                comando = np.clip(acao, -1.0, 1.0)
-                for junta, tau in zip(self.juntas, comando):
-                    junta.motorSpeed = float(np.sign(tau)) * VEL_MAX
-                    junta.maxMotorTorque = float(abs(tau)) * TORQUE_MAX
+                comando = np.clip(acao, -1.0, 1.0).astype(np.float32)
+                if self.alfa_filtro > 0.0:       # filtro passa-baixa: corta oscilação rápida
+                    comando = (self.alfa_filtro * self.comando_anterior
+                               + (1.0 - self.alfa_filtro) * comando)
+                for junta, u in zip(self.juntas, comando):
+                    if self.controle_continuo == "torque":
+                        junta.motorSpeed = float(np.sign(u)) * VEL_MAX
+                        junta.maxMotorTorque = float(abs(u)) * TORQUE_MAX
+                    else:
+                        junta.motorSpeed = float(u) * VEL_MAX
+                        junta.maxMotorTorque = TORQUE_MAX
             else:
                 # Converte o número da ação (0 a 26) em um nível de motor por junta
                 comando = ACOES[int(acao)]
@@ -207,6 +263,7 @@ class EmbaixadinhaEnv:
             # 2) Avança a física FRAME_SKIP vezes e conta embaixadinhas
             toques = 0
             tocou_chao = False
+            preso = False
             for _ in range(FRAME_SKIP):
                 self.mundo.Step(DT, 8, 3)
                 self.passos_fisica += 1
@@ -225,6 +282,14 @@ class EmbaixadinhaEnv:
                 if self.detector.queda:          # bola tocou o chão: encerra na hora,
                     tocou_chao = True            # sem esperar o fim da decisão
                     break
+                if self.anti_preso:
+                    if self._distancia_perna() <= MARGEM_ENCOSTADA:
+                        self.encostada += 1
+                    else:
+                        self.encostada = 0
+                    if self.encostada >= LIMITE_PRESO:   # bola carregada/parada na perna
+                        preso = True
+                        break
             self.embaixadinhas += toques
             self.passo += 1
 
@@ -232,19 +297,29 @@ class EmbaixadinhaEnv:
             bx, by = self.bola.position
             caiu = tocou_chao or by <= RAIO_BOLA + 0.02
             saiu = bx < 0 or bx > LARGURA or by > ALTURA + 3.0
-            terminou = bool(caiu or saiu)
+            terminou = bool(caiu or saiu or preso)
             truncou = self.passo >= MAX_PASSOS and not terminou
 
             # 4) Recompensa
             dx = abs(bx - self.pe.worldCenter.x)
-            recompensa = (R_VIVO
+            # Com anti_preso, "bola no ar" só rende R_VIVO se ela NÃO está encostada na perna
+            vivo = R_VIVO if not (self.anti_preso and self.encostada > 0) else 0.0
+            recompensa = (vivo
                         - K_DISTANCIA * dx
                         - K_ESFORCO * float(np.sum(comando ** 2))
                         + R_EMBAIXADINHA * toques)
-            if terminou:
+            if self.k_suavidade > 0.0:
+                variacao = comando - self.comando_anterior
+                recompensa -= self.k_suavidade * float(np.sum(variacao ** 2))
+            self.comando_anterior = np.asarray(comando, dtype=np.float32)
+            if self.anti_preso and self.encostada > GRACA_PRESO:
+                recompensa -= K_PRESO                    # cada decisão "carregando" custa
+            if preso:
+                recompensa += R_PRESO_FIM
+            elif terminou:
                 recompensa += R_QUEDA
 
-            info = {"embaixadinhas": self.embaixadinhas}
+            info = {"embaixadinhas": self.embaixadinhas, "preso": preso}
             return self._observar(), recompensa, terminou, truncou, info
 
     # ------------------------------------------------------------------
