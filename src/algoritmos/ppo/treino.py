@@ -9,7 +9,9 @@ Uso:
 
 Saídas (pasta resultados/ppo/):
     metricas.csv   recompensa, embaixadinhas, passos e (preso=1 se acabou por bola presa) de cada episódio
-    modelo.pt      pesos da rede treinada (ator + crítico)
+    modelo.pt      pesos da rede treinada (ator + crítico), no fim do treino
+    modelo_melhor.pt  checkpoint com a melhor avaliação determinística durante o treino
+    avaliacao.csv  passo, embaixadinhas e fração de episódios presos na avaliação determinística
     curvas.png     gráficos para os slides
 
 Obs.: o treino é contado em PASSOS (decisões do agente), não em episódios, porque o PPO
@@ -54,6 +56,24 @@ def avaliar(env, escolher, n_episodios):
     return np.array(resultados)
 
 
+def avaliar_det(env, agente, n_episodios):
+    """Política determinística (média da Gaussiana), a mesma usada em avaliar.py.
+
+    Devolve (embaixadinhas, presos) de cada episódio. O treino sorteia ações com ruído, então
+    as métricas de treino NÃO mostram como a política determinística se comporta.
+    """
+    toques, presos = [], []
+    for _ in range(n_episodios):
+        obs, _ = env.reset()
+        while True:
+            obs, _, terminou, truncou, info = env.step(agente.escolher_acao(obs, explorar=False))
+            if terminou or truncou:
+                break
+        toques.append(info["embaixadinhas"])
+        presos.append(float(info["preso"]))
+    return np.array(toques), np.array(presos)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--passos", type=int, default=1_000_000, help="total de passos de treino")
@@ -68,6 +88,11 @@ def main():
     parser.add_argument("--filtro", type=float, default=0.0,
                         help="filtro passa-baixa na ação, de 0 (desligado) a <1 (mais suave)")
     parser.add_argument("--log-std-inicial", type=float, default=-1.0)
+    parser.add_argument("--aval-a-cada", type=int, default=10,
+                        help="avalia a política determinística a cada N atualizações e guarda o "
+                             "melhor em modelo_melhor.pt (0 desliga)")
+    parser.add_argument("--aval-episodios", type=int, default=6,
+                        help="episódios por avaliação durante o treino")
     parser.add_argument("--semente", type=int, default=0)
     parser.add_argument("--saida", type=Path, default=DIR_RESULTADOS)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -93,6 +118,11 @@ def main():
                           anti_preso=not args.sem_anti_preso,
                           controle_continuo=args.controle, k_suavidade=args.suavidade,
                           alfa_filtro=args.filtro)
+    env_aval = None                       # ambiente separado só para avaliar (não mexe no treino)
+    if args.aval_a_cada > 0:
+        env_aval = EmbaixadinhaEnv(semente=args.semente + 1000, acao_continua=True,
+                                   anti_preso=not args.sem_anti_preso,
+                                   controle_continuo=args.controle, alfa_filtro=args.filtro)
     agente = AgentePPO(env.dim_obs, env.n_acoes, lr=args.lr, clip=args.clip,
                        epocas=args.epocas, tamanho_lote=args.lote,
                        passos_rollout=args.passos_rollout, coef_entropia=args.entropia,
@@ -103,6 +133,7 @@ def main():
     total_ep = 0.0
     passos = 0
     atualizacao = 0
+    historico_aval, melhor_aval = [], -1.0
 
     while passos < args.passos:
         agente.ajustar_lr(1.0 - passos / args.passos)
@@ -141,12 +172,25 @@ def main():
                   f"clip {stats['frac_clip']:.2f} | L_valor {stats['perda_valor']:.3f}", flush=True)
         if atualizacao % 10 == 0:
             agente.salvar(args.saida / "modelo.pt")        # checkpoint
+        if env_aval is not None and atualizacao % args.aval_a_cada == 0:
+            t, p = avaliar_det(env_aval, agente, args.aval_episodios)
+            historico_aval.append((passos, t.mean(), p.mean()))
+            marca = ""
+            if t.mean() > melhor_aval:
+                melhor_aval = t.mean()
+                agente.salvar(args.saida / "modelo_melhor.pt")
+                marca = "  <- melhor"
+            print(f"  [aval. determinística] passo {passos:8d} | embaixadinhas {t.mean():6.2f} | "
+                  f"presos {p.mean():4.0%}{marca}", flush=True)
 
     # --- Salva métricas e modelo -------------------------------------
     dados = np.column_stack([recompensas, toques, duracoes, presos])
     np.savetxt(args.saida / "metricas.csv", dados, delimiter=",",
                header="recompensa,embaixadinhas,passos,preso", comments="")
     agente.salvar(args.saida / "modelo.pt")
+    if historico_aval:
+        np.savetxt(args.saida / "avaliacao.csv", np.array(historico_aval), delimiter=",",
+                   header="passo,embaixadinhas,preso", comments="")
 
     # --- Comparação final: política treinada x política aleatória ----
     aleatoria = avaliar(env, lambda o: np.random.uniform(-1, 1, env.n_acoes), 100)
@@ -154,6 +198,10 @@ def main():
     print(f"\nEmbaixadinhas por episódio (100 episódios cada):")
     print(f"  aleatória: média {aleatoria.mean():.2f}, máximo {aleatoria.max()}")
     print(f"  treinada : média {treinada.mean():.2f}, máximo {treinada.max()}")
+    if historico_aval:        # também mede o melhor checkpoint (modelo_melhor.pt)
+        agente.carregar(args.saida / "modelo_melhor.pt")
+        melhor = avaliar(env, lambda o: agente.escolher_acao(o, explorar=False), 100)
+        print(f"  melhor checkpoint: média {melhor.mean():.2f}, máximo {melhor.max()}")
 
     # --- Gráficos -----------------------------------------------------
     fig, eixos = plt.subplots(1, 2, figsize=(12, 4.5))
