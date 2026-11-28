@@ -1,0 +1,7 @@
+agente,regra,episodios,media,mediana,maximo,completos,presos,agitacao
+Perna parada,original,600,1.40,2.0,2,0.0000,0.0000,0.034
+Aleatória,original,600,0.22,0.0,4,0.0000,0.0000,6.021
+DQN,original,600,78.50,80.0,92,0.9383,0.0000,4.421
+PPO,original,600,102.84,108.0,114,0.9500,0.0000,3.289
+DQN,preso,600,78.26,80.0,92,0.9317,0.0117,4.419
+PPO,preso,600,102.84,108.0,114,0.9500,0.0000,3.289
