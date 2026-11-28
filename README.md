@@ -85,13 +85,16 @@ python -m src.algoritmos.dqn.avaliar --gif demo.gif    # ou grava um GIF
 
 python -m src.algoritmos.ppo.treino --passos-como-dqn resultados/dqn/metricas.csv
                                                        # PPO (ação contínua) com o mesmo nº de passos do DQN;
-                                                       # salva em resultados/ppo/ (use --saida para outra pasta)
+                                                       # salva em resultados/ppo/ (use --saida para outra pasta);
+                                                       # a cada 10 atualizações avalia a política determinística e guarda
+                                                       # o melhor checkpoint (--aval-a-cada N muda o intervalo, 0 desliga)
 python -m src.algoritmos.ppo.avaliar                   # abre a janela com o agente PPO jogando (política determinística)
 python -m src.algoritmos.ppo.avaliar --estocastica     # idem, com o ruído da política
 python -m src.algoritmos.ppo.avaliar --gif demo_ppo.gif --episodios 1   # grava um GIF em resultados/ppo/ (precisa de: pip install imageio)
 
 python -m src.comparar                                 # DQN x PPO x linhas de base (600 episódios cada), em resultados/comparacao/
 ```
+
 ### Parâmetros do ambiente
 
 Parâmetros do ambiente (em `src/env/ambiente.py`): física a 60 Hz com `FRAME_SKIP = 4` (cada decisão dura 1/15 s), episódio de até 500 decisões, perna com densidade 15 e torque máximo de motor 80 N.m, bola leve (densidade 0,3) com restituição 0,5.
@@ -125,6 +128,8 @@ Parâmetros do ambiente (em `src/env/ambiente.py`): física a 60 Hz com `FRAME_S
 - O PPO usa o controle por torque e dois termos de recompensa a mais do que o DQN (bola presa e variação da ação, veja a tabela na seção 3). Eles foram necessários por falhas observadas só no PPO: primeiro o agente deixava a bola parada no canto entre o pé e a canela; depois a perna tremia.
 - Durante o treino (política com ruído), a média móvel de 100 episódios passa de 20 embaixadinhas com ~123 mil passos (o DQN, com ~118 mil), passa de 50 com ~203 mil e, nos últimos 500 episódios, fica em ~94 por episódio, com 89% dos episódios chegando ao limite de 500 decisões e 7% terminando por bola presa. Os números de treino não são diretamente comparáveis: o DQN treina com 5% de ações aleatórias e o PPO sorteia ações de uma gaussiana.
 - **Lição dos pilotos:** as métricas de treino não mostravam como a política determinística se comporta. Com `k_suavidade = 0`, os episódios de treino pareciam ótimos, mas na avaliação determinística todos terminavam com a bola presa. Por isso o `treino.py` agora avalia a política determinística durante o treino e guarda o melhor checkpoint (`modelo_melhor.pt`, `avaliacao.csv`).
+  - **Os resultados em `resultados/ppo/` (e a comparação em `resultados/comparacao/`) foram gerados antes dessa mudança**, com a versão anterior do `treino.py`. Por isso a pasta não contém `modelo_melhor.pt` nem `avaliacao.csv`: esses arquivos aparecem quando o treino é executado de novo.
+  - O monitoramento usa um ambiente separado (semente + 1000) e a política determinística, sem sortear ações, então não altera o treino.
 - Avaliação final DQN × PPO (`python -m src.comparar`): mesmo protocolo para os dois (política gulosa/determinística, 3 sementes de ambiente, 600 episódios por agente). Cada agente foi testado com a regra de bola presa desligada (original) e ligada. Resultados em `resultados/comparacao/`:
 
   | Política | Embaixadinhas (regra original) | Embaixadinhas (com regra de bola presa) | Episódios completos (500 decisões) | Agitação da perna (rad/s por decisão) |
